@@ -13,16 +13,22 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck --workspaces --if-present",
-    "test": "vitest run",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "db:migrate": "npm run db:migrate --workspace @inapp/api",
+    "db:migrate:down": "npm run db:migrate:down --workspace @inapp/api",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm run test"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@testcontainers/postgresql": "12.2.1",
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
     "eslint": "10.13.0",
     "eslint-config-prettier": "10.1.8",
     "globals": "17.13.0",
     "prettier": "3.9.10",
+    "testcontainers": "12.2.1",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.1",
     "vitest": "5.0.5"

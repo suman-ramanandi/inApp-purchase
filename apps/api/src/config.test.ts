@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig } from './config.js';
+import { ConfigError, loadConfig } from './config.ts';
 
 const validEnv = {
   DATABASE_URL: 'postgres://app:not-a-real-password@localhost:5432/inapp',

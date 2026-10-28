@@ -54,14 +54,34 @@ jobs:
       - name: Scan repository history
         run: ./gitleaks git --redact --verbose --exit-code 1 .
 
-  compose:
-    name: Docker Compose (Postgres health)
+  integration:
+    name: Integration tests (PostgreSQL via Testcontainers)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+
+  compose:
+    name: Docker Compose (Postgres health, migration CLI)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
       - name: Reject missing credentials
         run: |
           if docker compose --env-file /dev/null config --quiet 2> missing.err; then
@@ -77,6 +97,14 @@ jobs:
         run: |
           set -a; . ./.env.example; set +a
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc 'select version();'
+      - name: Migrate up, down and up again through the CLI
+        run: |
+          set -a; . ./.env.example; set +a
+          npm run db:migrate
+          npm run db:migrate:down
+          npm run db:migrate
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc \
+            "select count(*) from information_schema.tables where table_schema = 'public' and table_name not like 'kysely_%';"
       - if: failure()
         run: docker compose --env-file .env.example logs postgres
       - if: always()
