@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new commit on a pull request cancels that PR's older run. Push runs get a unique group
+# (their run id), so they are never cancelled or queued behind each other.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan full history, not just the latest commit
+          persist-credentials: false
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "$archive" gitleaks
+      - name: Scan repository history
+        run: ./gitleaks git --redact --verbose --exit-code 1 .
+
+  compose:
+    name: Docker Compose (Postgres health)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject missing credentials
+        run: |
+          if docker compose --env-file /dev/null config --quiet 2> missing.err; then
+            echo "Compose accepted a configuration without credentials" >&2
+            exit 1
+          fi
+          grep -E 'set POSTGRES_[A-Z]+ in \.env' missing.err
+      - run: docker compose --env-file .env.example config --quiet
+      - name: Start PostgreSQL on a fresh volume and wait until healthy
+        run: docker compose --env-file .env.example up --detach --wait --wait-timeout 60
+      - run: docker compose --env-file .env.example ps
+      - name: Query PostgreSQL from the host using DATABASE_URL from .env.example
+        run: |
+          set -a; . ./.env.example; set +a
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -tAc 'select version();'
+      - if: failure()
+        run: docker compose --env-file .env.example logs postgres
+      - if: always()
+        run: docker compose --env-file .env.example down --volumes
