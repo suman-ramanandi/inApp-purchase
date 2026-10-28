@@ -1,1 +1,1 @@
-﻿# In-App Purchase Platform
+# inApp-purchase
