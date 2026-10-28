@@ -1,0 +1,14 @@
+# Store text with LF in the repository and check it out with LF on every OS,
+# so Windows checkouts match Linux CI and containers byte for byte.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
