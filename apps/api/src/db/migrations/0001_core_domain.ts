@@ -100,6 +100,7 @@ const upStatements: RawBuilder<unknown>[] = [
       constraint subscriptions_store_key_length check (length(store_subscription_key) > 0),
       constraint subscriptions_store_identity_key
         unique (store, environment, store_subscription_key),
+      constraint subscriptions_id_user_key unique (id, user_id),
       constraint subscriptions_period_order check (expires_at > current_period_start),
       constraint subscriptions_grace_matches_status
         check ((status = 'grace_period') = (grace_expires_at is not null)),
@@ -117,7 +118,7 @@ const upStatements: RawBuilder<unknown>[] = [
       id uuid primary key default gen_random_uuid(),
       user_id uuid not null references app_users (id) on delete restrict,
       product_id uuid not null references products (id) on delete restrict,
-      subscription_id uuid references subscriptions (id) on delete restrict,
+      subscription_id uuid,
       store text not null,
       environment text not null,
       store_transaction_id text not null,
@@ -139,6 +140,9 @@ const upStatements: RawBuilder<unknown>[] = [
         check (revocation_reason in ${REVOCATION_REASONS}),
       constraint store_transactions_store_identity_key
         unique (store, environment, store_transaction_id),
+      constraint store_transactions_id_user_key unique (id, user_id),
+      constraint store_transactions_subscription_owner_fkey foreign key (subscription_id, user_id)
+        references subscriptions (id, user_id) on delete restrict,
       constraint store_transactions_renewal_has_subscription
         check (kind <> 'renewal' or subscription_id is not null),
       constraint store_transactions_expiry_order
@@ -185,8 +189,8 @@ const upStatements: RawBuilder<unknown>[] = [
       user_id uuid not null references app_users (id) on delete restrict,
       entitlement_id uuid not null references entitlements (id) on delete restrict,
       source text not null,
-      subscription_id uuid references subscriptions (id) on delete restrict,
-      transaction_id uuid references store_transactions (id) on delete restrict,
+      subscription_id uuid,
+      transaction_id uuid,
       starts_at timestamptz not null,
       ends_at timestamptz,
       revoked_at timestamptz,
@@ -201,7 +205,11 @@ const upStatements: RawBuilder<unknown>[] = [
       ),
       constraint entitlement_grants_window_order check (ends_at is null or ends_at > starts_at),
       constraint entitlement_grants_subscription_key unique (subscription_id, entitlement_id),
-      constraint entitlement_grants_transaction_key unique (transaction_id, entitlement_id)
+      constraint entitlement_grants_transaction_key unique (transaction_id, entitlement_id),
+      constraint entitlement_grants_subscription_owner_fkey foreign key (subscription_id, user_id)
+        references subscriptions (id, user_id) on delete restrict,
+      constraint entitlement_grants_transaction_owner_fkey foreign key (transaction_id, user_id)
+        references store_transactions (id, user_id) on delete restrict
     )`,
   sql`
     create index entitlement_grants_user_active_idx

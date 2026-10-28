@@ -1,4 +1,4 @@
-import type { Insertable } from 'kysely';
+import { sql, type Insertable } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   SUBSCRIPTION_STATUSES,
@@ -432,5 +432,128 @@ describe('entitlement grants', () => {
       '23505',
       'entitlement_grants_subscription_key',
     ]);
+  });
+});
+
+// Regression: user_id on transactions and grants was not tied to the owning subscription or
+// transaction, so rows for one user could hang off another user's subscription.
+describe('ownership', () => {
+  async function twoUsersAndSubscription() {
+    const ids = await seedCatalogue();
+    const other = await db
+      .insertInto('app_users')
+      .values({ external_id: 'user-2' })
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const sub = await db
+      .insertInto('subscriptions')
+      .values(subscriptionRow(ids, 'active'))
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    return { ...ids, otherUserId: other.id, subscriptionId: sub.id };
+  }
+
+  function renewal(userId: string, productId: string, subscriptionId: string) {
+    return {
+      user_id: userId,
+      product_id: productId,
+      subscription_id: subscriptionId,
+      store: 'simulated' as const,
+      environment: 'sandbox' as const,
+      store_transaction_id: 'txn-renewal',
+      kind: 'renewal' as const,
+      purchased_at: at(30),
+      verified_payload: '{}',
+    };
+  }
+
+  it("rejects a transaction attached to another user's subscription", async () => {
+    const ids = await twoUsersAndSubscription();
+    const error = await pgError(
+      db
+        .insertInto('store_transactions')
+        .values(renewal(ids.otherUserId, ids.productId, ids.subscriptionId))
+        .execute(),
+    );
+    expect([error.code, error.constraint]).toEqual([
+      '23503',
+      'store_transactions_subscription_owner_fkey',
+    ]);
+
+    await db
+      .insertInto('store_transactions')
+      .values(renewal(ids.userId, ids.productId, ids.subscriptionId))
+      .execute();
+  });
+
+  it("rejects a grant derived from another user's subscription", async () => {
+    const ids = await twoUsersAndSubscription();
+    const error = await pgError(
+      db
+        .insertInto('entitlement_grants')
+        .values({
+          user_id: ids.otherUserId,
+          entitlement_id: ids.premiumId,
+          source: 'subscription',
+          subscription_id: ids.subscriptionId,
+          starts_at: at(0),
+          ends_at: at(30),
+        })
+        .execute(),
+    );
+    expect([error.code, error.constraint]).toEqual([
+      '23503',
+      'entitlement_grants_subscription_owner_fkey',
+    ]);
+  });
+
+  it("rejects a grant derived from another user's transaction", async () => {
+    const ids = await twoUsersAndSubscription();
+    const txn = await db
+      .insertInto('store_transactions')
+      .values(renewal(ids.userId, ids.productId, ids.subscriptionId))
+      .returning('id')
+      .executeTakeFirstOrThrow();
+    const error = await pgError(
+      db
+        .insertInto('entitlement_grants')
+        .values({
+          user_id: ids.otherUserId,
+          entitlement_id: ids.premiumId,
+          source: 'transaction',
+          transaction_id: txn.id,
+          starts_at: at(0),
+          ends_at: null,
+        })
+        .execute(),
+    );
+    expect([error.code, error.constraint]).toEqual([
+      '23503',
+      'entitlement_grants_transaction_owner_fkey',
+    ]);
+  });
+});
+
+describe('timestamps', () => {
+  it('round-trip to the millisecond regardless of the client time zone', async () => {
+    // The integration project runs with a non-UTC TZ (see vitest.config.ts), so this exercises
+    // pg's offset handling. Staleness checks compare lastObservedAt exactly, so precision matters.
+    expect(new Date(0).getTimezoneOffset()).not.toBe(0);
+    const ids = await seedCatalogue();
+    const observed = new Date('2026-03-05T13:47:21.123Z');
+    await db
+      .insertInto('subscriptions')
+      .values(subscriptionRow(ids, 'active', { last_observed_at: observed }))
+      .execute();
+
+    const row = await db
+      .selectFrom('subscriptions')
+      .select([
+        'last_observed_at',
+        sql<string>`(last_observed_at at time zone 'UTC')::text`.as('utc'),
+      ])
+      .executeTakeFirstOrThrow();
+    expect(row.last_observed_at.getTime()).toBe(observed.getTime());
+    expect(row.utc).toBe('2026-03-05 13:47:21.123');
   });
 });

@@ -63,7 +63,7 @@ const EXPECTED: Record<SubscriptionStatus, Record<SubscriptionStatus, Transition
   paused: {
     active: 'resumed',
     grace_period: null,
-    billing_retry: null,
+    billing_retry: 'billing_failed',
     paused: null,
     expired: 'expired',
     revoked: 'refunded',
@@ -244,6 +244,17 @@ describe('reconcile: lifecycle scenarios', () => {
     expect(result).toMatchObject({ kind: 'updated', causes: ['resubscribed'] });
   });
 
+  it('goes from paused to billing retry when the payment on resume fails (Google account hold)', () => {
+    const result = reconcile(
+      state('paused', { lastObservedAt: at(30) }),
+      snapshot('billing_retry', { observedAt: at(45) }),
+    );
+    expect(result).toMatchObject({ kind: 'updated', causes: ['billing_failed'] });
+    if (result.kind === 'updated') {
+      expect(isEntitled(result.next, at(46))).toBe(false);
+    }
+  });
+
   it('pauses and resumes', () => {
     const paused = reconcile(state('active'), snapshot('paused', { observedAt: at(30) }));
     expect(paused).toMatchObject({ kind: 'updated', causes: ['paused'] });
@@ -292,12 +303,56 @@ describe('reconcile: ordering and idempotency', () => {
     expect(result).toMatchObject({ kind: 'unchanged', next: { lastObservedAt: at(9) } });
   });
 
-  it('rejects a snapshot whose period ends earlier than the persisted one', () => {
+  it.each(['active', 'grace_period'] as const)(
+    'rejects a %s snapshot whose period ends earlier than the persisted one',
+    (status) => {
+      const result = reconcile(
+        state('active', { expiresAt: at(60) }),
+        snapshot(status, {
+          expiresAt: at(30),
+          graceExpiresAt: status === 'grace_period' ? at(36) : null,
+        }),
+      );
+      expect(result).toMatchObject({ kind: 'rejected', reason: 'period_regressed' });
+    },
+  );
+
+  // Regression: these used to be rejected as period_regressed, leaving the persisted state
+  // granting access until the old period end.
+  it('accepts a refund whose period end moved back, and access ends', () => {
     const result = reconcile(
-      state('active', { expiresAt: at(60) }),
-      snapshot('active', { expiresAt: at(30) }),
+      state('active'),
+      snapshot('revoked', {
+        expiresAt: at(5),
+        revocation: { at: at(5), reason: 'refund' },
+        observedAt: at(5),
+      }),
     );
-    expect(result).toMatchObject({ kind: 'rejected', reason: 'period_regressed' });
+    expect(result).toMatchObject({ kind: 'updated', causes: ['refunded'] });
+    if (result.kind === 'updated') {
+      expect(isEntitled(result.next, at(10))).toBe(false);
+    }
+  });
+
+  it('accepts an expiry earlier than the persisted period end, and access ends', () => {
+    // Google Play reports a revoked subscription as expired.
+    const result = reconcile(
+      state('active'),
+      snapshot('expired', { expiresAt: at(8), observedAt: at(9) }),
+    );
+    expect(result).toMatchObject({ kind: 'updated', causes: ['expired'] });
+    if (result.kind === 'updated') {
+      expect(isEntitled(result.next, at(10))).toBe(false);
+    }
+  });
+
+  it('still rejects a stale access-ending snapshot', () => {
+    const current = state('active', { lastObservedAt: at(20) });
+    expect(
+      reconcile(current, snapshot('expired', { expiresAt: at(8), observedAt: at(9) })),
+    ).toEqual({
+      kind: 'stale',
+    });
   });
 
   it('does not mutate its inputs', () => {

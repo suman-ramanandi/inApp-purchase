@@ -97,7 +97,8 @@ const STATUS_TRANSITIONS: Record<
   },
   grace_period: { active: 'recovered', billing_retry: 'grace_period_expired', expired: 'expired' },
   billing_retry: { active: 'recovered', expired: 'expired' },
-  paused: { active: 'resumed', expired: 'expired' },
+  // Google Play: a failed payment when resuming goes straight to account hold, never to grace.
+  paused: { active: 'resumed', billing_retry: 'billing_failed', expired: 'expired' },
   expired: { active: 'resubscribed' },
   // Only a refund can be reversed; see transitionCause().
   revoked: { active: 'refund_reversed', expired: 'refund_reversed' },
@@ -138,7 +139,13 @@ export function reconcile(
     return { kind: 'stale' };
   }
 
-  if (snapshot.expiresAt.getTime() < current.expiresAt.getTime()) {
+  // An earlier period end is contradictory only while the snapshot still grants access. A snapshot
+  // that grants none (a refund, revocation or expiry) is accepted even if its period end moved
+  // back; rejecting it would leave the persisted state granting access.
+  if (
+    accessEndsAt(snapshot) !== null &&
+    snapshot.expiresAt.getTime() < current.expiresAt.getTime()
+  ) {
     return {
       kind: 'rejected',
       reason: 'period_regressed',

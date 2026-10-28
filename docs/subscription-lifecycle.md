@@ -50,12 +50,14 @@ Rows are the persisted status, columns the snapshot's status. A dash is rejected
 | `active`        | ·               | billing_failed | billing_failed       | paused | expired         | refunded / revoked |
 | `grace_period`  | recovered       | ·              | grace_period_expired | —      | expired         | refunded / revoked |
 | `billing_retry` | recovered       | —              | ·                    | —      | expired         | refunded / revoked |
-| `paused`        | resumed         | —              | —                    | ·      | expired         | refunded / revoked |
+| `paused`        | resumed         | —              | billing_failed       | ·      | expired         | refunded / revoked |
 | `expired`       | resubscribed    | —              | —                    | —      | ·               | refunded / revoked |
 | `revoked`       | refund_reversed | —              | —                    | —      | refund_reversed | ·                  |
 
 - Changes into `revoked` record `refunded` or `revoked` depending on the revocation reason.
 - Leaving `revoked` is allowed only when the revocation was a refund (a refund reversal).
+- `paused → billing_retry` follows Google Play: a failed payment when resuming goes straight to
+  account hold. Google documents no path from paused to a grace period, so that change is rejected.
 - Within the same status (`·`), the reducer records `renewed` when the period end advances,
   `auto_renew_disabled` / `auto_renew_enabled` when the flag changes, and `details_changed` for
   any other field change. Nothing changed gives `unchanged`.
@@ -67,11 +69,11 @@ Rows are the persisted status, columns the snapshot's status. A dash is rejected
 
 ## Rejections
 
-| Reason                   | When                                                                                                                                                                                             |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `invalid_snapshot`       | Period ends before it starts; `graceExpiresAt` set outside `grace_period` (or missing in it); grace ends before the period; revocation set outside `revoked` (or missing in it); an invalid date |
-| `transition_not_allowed` | The status pair is a dash in the table above                                                                                                                                                     |
-| `period_regressed`       | The snapshot's `expiresAt` is earlier than the persisted one                                                                                                                                     |
+| Reason                   | When                                                                                                                                                                                                                                                                                           |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_snapshot`       | Period ends before it starts; `graceExpiresAt` set outside `grace_period` (or missing in it); grace ends before the period; revocation set outside `revoked` (or missing in it); an invalid date                                                                                               |
+| `transition_not_allowed` | The status pair is a dash in the table above                                                                                                                                                                                                                                                   |
+| `period_regressed`       | The snapshot's `expiresAt` is earlier than the persisted one **and the snapshot still grants access**. A snapshot that grants none (refund, revocation, expiry, billing retry, pause) is accepted even when its period end moved back, so a contradictory end date can never keep access alive |
 
 The database enforces the same invariants with CHECK constraints (`subscriptions_*` in
 [`0001_core_domain.ts`](../apps/api/src/db/migrations/0001_core_domain.ts)), so a bug that bypasses
@@ -107,3 +109,9 @@ Idempotency is enforced by the database rather than by checks in code:
 | Same store transaction twice      | `store_transactions_store_identity_key` with `on conflict do nothing`                      |
 | Grant recomputed twice            | `entitlement_grants_subscription_key` / `_transaction_key` upserts                         |
 | Same webhook delivered twice (M3) | `UNIQUE(store, notification_id)` on `webhook_events`                                       |
+
+Ownership is enforced the same way. A transaction attached to a subscription, and a grant derived
+from a subscription or transaction, must carry that row's `user_id`: composite foreign keys on
+`(subscription_id, user_id)` and `(transaction_id, user_id)` reject anything else. Binding a
+store purchase to the right user in the first place (Apple `appAccountToken`, Google
+`obfuscatedExternalAccountId`) is M2's job.

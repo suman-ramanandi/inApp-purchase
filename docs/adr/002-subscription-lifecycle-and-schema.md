@@ -53,6 +53,9 @@ setting `revocationDate` on the **existing** transaction, so a separate row woul
 - Grants reference their source through `subscription_id` / `transaction_id` foreign keys with a
   CHECK that exactly the right one is set, rather than a polymorphic `source_id` without referential
   integrity.
+- Rows that hang off a subscription or transaction repeat its `user_id` and reference it through
+  a composite foreign key on `(id, user_id)`, so the database rejects a transaction or grant whose
+  owner differs from the subscription's.
 - `store_products` uses `unique nulls not distinct` (PostgreSQL 15+) so a missing Google base plan
   still counts as a value in uniqueness.
 - `bigint` values (money in micros, identity ids) are parsed as JavaScript `bigint`, scoped to the
