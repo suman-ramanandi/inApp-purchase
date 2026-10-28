@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:migrate": "node --env-file-if-exists=../../.env src/db/migrate.ts latest",
+    "db:migrate:down": "node --env-file-if-exists=../../.env src/db/migrate.ts down"
   },
   "dependencies": {
+    "kysely": "0.29.7",
+    "pg": "8.23.1",
     "zod": "4.6.7"
   }
 }

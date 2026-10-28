@@ -6,16 +6,20 @@ that milestones build towards. Technology choices and their trade-offs are recor
 
 ## Project status
 
-**Milestone M0 (foundation) only.** Everything below this section is design, not implemented
-code, unless this table lists it as implemented.
+**Milestones M0 (foundation) and M1 (domain and schema).** Everything below this section is design,
+not implemented code, unless this table lists it as implemented.
 
-| Area                                                                           | Status                                              |
-| ------------------------------------------------------------------------------ | --------------------------------------------------- |
-| npm workspaces, TypeScript, ESLint, Prettier, Vitest                           | Implemented                                         |
-| Environment config validation (`apps/api/src/config.ts`)                       | Implemented                                         |
-| Local PostgreSQL via Docker Compose                                            | Configured; not yet run on the development machine  |
-| CI (lint, typecheck, test, gitleaks, Compose health)                           | Configured; first run happens when pushed to GitHub |
-| HTTP API, database schema, worker, webhooks, simulator, admin, store providers | Planned (M1–M9); no code exists yet                 |
+| Area                                                                                    | Status                                                                        |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| npm workspaces, TypeScript, ESLint, Prettier, Vitest                                    | Implemented (M0)                                                              |
+| Environment config validation (`apps/api/src/config.ts`)                                | Implemented (M0)                                                              |
+| Local PostgreSQL via Docker Compose; CI (lint, typecheck, tests, gitleaks, Compose)     | Implemented (M0); Compose verified in CI only                                 |
+| Subscription lifecycle reducer and entitlement timing (`billing/lifecycle.ts`)          | Implemented (M1); see [subscription-lifecycle.md](subscription-lifecycle.md)  |
+| Schema and migrations for catalogue, users, subscriptions, transactions, events, grants | Implemented (M1); see [ADR-002](adr/002-subscription-lifecycle-and-schema.md) |
+| Catalogue lookup and active-entitlement queries                                         | Implemented (M1)                                                              |
+| Integration tests (Testcontainers PostgreSQL)                                           | Implemented (M1); run in CI                                                   |
+| Code that applies snapshots in a transaction                                            | Designed (M1 docs); implemented with M2/M3                                    |
+| HTTP API, worker, webhooks, simulator, admin, store providers                           | Planned (M2–M9); no code exists yet                                           |
 
 ## Purpose
 
@@ -52,8 +56,9 @@ PostgreSQL is the only stateful dependency; the job queue lives in it too.
    out-of-order and duplicate delivery harmless, and it is mandatory for Google, whose
    notifications carry no subscription state.
 2. **Lifecycle rules are a pure function.**
-   `reduce(current, verifiedSnapshot) → { next, events }` performs no I/O and is unit-tested
-   exhaustively. Everything around it is plumbing.
+   `reconcile(current, verifiedSnapshot)` returns the next state and the named causes of the
+   change (or `stale` / `rejected`). It performs no I/O and is unit-tested exhaustively. Everything
+   around it is plumbing.
 3. **One state change, one transaction.** Lock the subscription row (`SELECT … FOR UPDATE`), apply
    the reducer, write the subscription, append a `subscription_events` row, recompute the user's
    entitlement grants, commit. Concurrent deliveries for one subscription serialise on the lock.
@@ -107,22 +112,22 @@ The simulator is mounted only when `SIMULATOR_ENABLED=true` and never alongside 
 
 ## Data model
 
-| Table                  | Purpose and key constraints                                                                                     |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `app_users`            | End users identified by the host app's `external_id` (unique).                                                  |
-| `entitlements`         | Capabilities such as `premium` (`key` unique).                                                                  |
-| `products`             | Internal catalogue: `sku` (unique), `type` (consumable, non_consumable, subscription).                          |
-| `product_entitlements` | Which entitlements a product unlocks.                                                                           |
-| `store_products`       | Store identifiers per product; unique `(store, store_product_id, base_plan_id)`.                                |
-| `subscriptions`        | Current lifecycle state per store subscription; unique `(store, environment, store_subscription_key)`.          |
-| `store_transactions`   | Every verified purchase, renewal, refund and revocation; unique `(store, environment, store_transaction_id)`.   |
-| `subscription_events`  | Append-only state-transition history with its cause; drives the admin timeline.                                 |
-| `entitlement_grants`   | Derived access windows (`starts_at`, `ends_at`, `revoked_at`) from a subscription, transaction or manual grant. |
-| `webhook_events`       | Raw inbound notifications and processing status; unique `(store, notification_id)` is the idempotency guard.    |
-| `admin_users`          | Admin accounts with argon2id password hashes and a role (viewer, support, admin).                               |
-| `admin_sessions`       | Hashed session and CSRF tokens with expiry.                                                                     |
-| `audit_log`            | Append-only record of every admin write, with before/after values.                                              |
-| `api_clients`          | Hashed API keys for server-to-server access.                                                                    |
+| Table                  | Purpose and key constraints                                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `app_users`            | End users identified by the host app's `external_id` (unique).                                                                             |
+| `entitlements`         | Capabilities such as `premium` (`key` unique).                                                                                             |
+| `products`             | Internal catalogue: `sku` (unique), `type` (consumable, non_consumable, subscription).                                                     |
+| `product_entitlements` | Which entitlements a product unlocks.                                                                                                      |
+| `store_products`       | Store identifiers per product; unique `(store, store_product_id, base_plan_id)`.                                                           |
+| `subscriptions`        | Current lifecycle state per store subscription; unique `(store, environment, store_subscription_key)`.                                     |
+| `store_transactions`   | Every verified purchase and renewal, with refund/revocation as attributes; unique `(store, environment, store_transaction_id)`.            |
+| `subscription_events`  | Append-only state-transition history with its cause; drives the admin timeline.                                                            |
+| `entitlement_grants`   | Derived access windows (`starts_at`, `ends_at`, `revoked_at`) from a subscription, transaction or manual grant, referenced by foreign key. |
+| `webhook_events` (M3)  | Raw inbound notifications and processing status; unique `(store, notification_id)` is the idempotency guard.                               |
+| `admin_users` (M5)     | Admin accounts with argon2id password hashes and a role (viewer, support, admin).                                                          |
+| `admin_sessions` (M5)  | Hashed session and CSRF tokens with expiry.                                                                                                |
+| `audit_log` (M5)       | Append-only record of every admin write, with before/after values.                                                                         |
+| `api_clients` (M2)     | Hashed API keys for server-to-server access.                                                                                               |
 
 Effective entitlements are grants where `starts_at ≤ now < coalesce(ends_at, ∞)` and
 `revoked_at IS NULL`: one indexed query, no cache to invalidate.

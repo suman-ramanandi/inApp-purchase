@@ -8,35 +8,39 @@ subscription lifecycle (renewals, cancellations, grace periods, billing retry, r
 revocations) and answering one question reliably: **which entitlements does this user have right
 now?**
 
-> **Status: milestone M0 (project foundation).** The repository currently contains tooling,
-> configuration, CI and design documents. **No billing, API or database code exists yet.** The
+> **Status: milestone M1 (domain model and schema).** The repository contains the project
+> foundation, the subscription lifecycle rules, the database schema and their tests. **There is no
+> HTTP API, webhook handling or store integration yet**, so nothing can verify a real purchase. The
 > sections below separate what is implemented from what is planned.
 
 ## What exists today
 
-| Implemented in M0                                                                    | Location                                                                       |
-| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| npm workspaces monorepo with strict TypeScript                                       | [`package.json`](package.json), [`tsconfig.base.json`](tsconfig.base.json)     |
-| Linting (typescript-eslint, type-checked) and formatting (Prettier)                  | [`eslint.config.js`](eslint.config.js), [`.prettierrc.json`](.prettierrc.json) |
-| Environment config validation that never echoes secret values, with unit tests       | [`apps/api/src/config.ts`](apps/api/src/config.ts)                             |
-| Local PostgreSQL 16 via Docker Compose, with a health check                          | [`docker-compose.yml`](docker-compose.yml)                                     |
-| CI: lint, format check, typecheck, tests, gitleaks secret scan, Compose health check | [`.github/workflows/ci.yml`](.github/workflows/ci.yml)                         |
-| Dependabot config for npm and GitHub Actions (active once on the default branch)     | [`.github/dependabot.yml`](.github/dependabot.yml)                             |
-| Architecture and decision records                                                    | [`docs/architecture.md`](docs/architecture.md), [`docs/adr/`](docs/adr/)       |
+| Implemented in M0                                                                       | Location                                                                                                         |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| npm workspaces monorepo with strict TypeScript                                          | [`package.json`](package.json), [`tsconfig.base.json`](tsconfig.base.json)                                       |
+| Linting (typescript-eslint, type-checked) and formatting (Prettier)                     | [`eslint.config.js`](eslint.config.js), [`.prettierrc.json`](.prettierrc.json)                                   |
+| Environment config validation that never echoes secret values, with unit tests          | [`apps/api/src/config.ts`](apps/api/src/config.ts)                                                               |
+| Local PostgreSQL 16 via Docker Compose, with a health check                             | [`docker-compose.yml`](docker-compose.yml)                                                                       |
+| CI: lint, format check, typecheck, tests, gitleaks secret scan, Compose health check    | [`.github/workflows/ci.yml`](.github/workflows/ci.yml)                                                           |
+| Dependabot config for npm and GitHub Actions (active once on the default branch)        | [`.github/dependabot.yml`](.github/dependabot.yml)                                                               |
+| Architecture and decision records                                                       | [`docs/architecture.md`](docs/architecture.md), [`docs/adr/`](docs/adr/)                                         |
+| **M1:** subscription lifecycle reducer (pure, deterministic) and time-based entitlement | [`apps/api/src/billing/lifecycle.ts`](apps/api/src/billing/lifecycle.ts)                                         |
+| **M1:** PostgreSQL schema and migrations with named constraints, and a migration CLI    | [`apps/api/src/db/`](apps/api/src/db/)                                                                           |
+| **M1:** catalogue lookup and active-entitlement queries                                 | [`apps/api/src/catalogue/`](apps/api/src/catalogue/), [`apps/api/src/entitlements/`](apps/api/src/entitlements/) |
+| **M1:** integration tests against real PostgreSQL (Testcontainers)                      | [`apps/api/test/integration/`](apps/api/test/integration/)                                                       |
 
 ## What is planned
 
-| Milestone | Scope                                                                                         |
-| --------- | --------------------------------------------------------------------------------------------- |
-| M1        | Database schema and migrations, subscription lifecycle state machine, entitlement calculation |
-| M2        | Client API with simulated purchase verification and per-user purchase binding                 |
-| M3        | Webhook pipeline: signature verification, idempotent storage, transactional jobs, retries     |
-| M4        | Billing simulator: lifecycle scenarios, clock control, duplicate and out-of-order delivery    |
-| M5        | Admin API and dashboard, audit log, end-to-end tests                                          |
-| M6        | Apple App Store integration (StoreKit 2 transactions, App Store Server Notifications v2)      |
-| M7        | Google Play integration (Play Developer API, Real-time Developer Notifications via Pub/Sub)   |
-| M8        | Reconciliation jobs and hardening                                                             |
-| M9        | Production images and a public demo running in simulated mode                                 |
+| Milestone | Scope                                                                                       |
+| --------- | ------------------------------------------------------------------------------------------- |
+| M2        | Client API with simulated purchase verification and per-user purchase binding               |
+| M3        | Webhook pipeline: signature verification, idempotent storage, transactional jobs, retries   |
+| M4        | Billing simulator: lifecycle scenarios, clock control, duplicate and out-of-order delivery  |
+| M5        | Admin API and dashboard, audit log, end-to-end tests                                        |
+| M6        | Apple App Store integration (StoreKit 2 transactions, App Store Server Notifications v2)    |
+| M7        | Google Play integration (Play Developer API, Real-time Developer Notifications via Pub/Sub) |
+| M8        | Reconciliation jobs and hardening                                                           |
+| M9        | Production images and a public demo running in simulated mode                               |
 
 Real Apple and Google integrations require developer accounts and credentials. Until then, they
 are tested against fixtures, and the public demo uses the built-in simulator. See
@@ -47,7 +51,7 @@ are tested against fixtures, and the public demo uses the built-in simulator. Se
 - **Node.js 24 LTS** (the exact major is in [`.nvmrc`](.nvmrc)) and npm 10 or later
 - **Git**
 - **Docker Desktop** (Windows/macOS) or **Docker Engine with the Compose plugin** (Linux), for the
-  local database. Docker is not needed to run lint, typecheck or unit tests.
+  local database and integration tests. Docker is not needed to run lint, typecheck or unit tests.
 
 ## Getting started
 
@@ -101,14 +105,17 @@ in PowerShell and in Linux shells.
 
 ## npm scripts
 
-| Script                 | What it does                                             |
-| ---------------------- | -------------------------------------------------------- |
-| `npm run lint`         | ESLint with type-aware rules across all workspaces       |
-| `npm run format`       | Rewrites files with Prettier                             |
-| `npm run format:check` | Fails if any file is not Prettier-formatted (used in CI) |
-| `npm run typecheck`    | `tsc --noEmit` for root config files and every workspace |
-| `npm test`             | Runs all Vitest tests once                               |
-| `npm run check`        | Runs lint, format check, typecheck and tests in sequence |
+| Script                     | What it does                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `npm run lint`             | ESLint with type-aware rules across all workspaces                              |
+| `npm run format`           | Rewrites files with Prettier                                                    |
+| `npm run format:check`     | Fails if any file is not Prettier-formatted (used in CI)                        |
+| `npm run typecheck`        | `tsc --noEmit` for root config files and every workspace                        |
+| `npm test`                 | Runs the unit tests once                                                        |
+| `npm run test:integration` | Runs integration tests against a disposable PostgreSQL container (needs Docker) |
+| `npm run db:migrate`       | Applies pending migrations to `DATABASE_URL` (read from `.env`)                 |
+| `npm run db:migrate:down`  | Rolls back the most recent migration                                            |
+| `npm run check`            | Runs lint, format check, typecheck and unit tests in sequence                   |
 
 ## Testing
 
@@ -119,18 +126,35 @@ npm test
 npx vitest           # watch mode
 ```
 
-Integration tests against a real PostgreSQL (Testcontainers) and end-to-end tests (Playwright) are
-planned for M1 and M5. They will require Docker.
+Integration tests live in `apps/api/test/integration`. They start one PostgreSQL 16 container with
+[Testcontainers](https://testcontainers.com), give each test file its own database, and check
+migrations (apply, roll back, re-apply), every named constraint, idempotency keys and the queries.
+They need Docker:
+
+```sh
+npm run test:integration
+```
+
+CI runs them on every push and pull request. End-to-end tests (Playwright) are planned for M5.
+
+To apply the schema to the Compose database:
+
+```sh
+docker compose up --detach --wait
+npm run db:migrate
+```
 
 ## Continuous integration
 
 [`ci.yml`](.github/workflows/ci.yml) runs on pushes to `main` and `develop` and on every pull
 request:
 
-- **checks**: `npm ci`, lint, format check, typecheck and tests on Node from `.nvmrc`.
+- **checks**: `npm ci`, lint, format check, typecheck and unit tests on Node from `.nvmrc`.
+- **integration**: integration tests against PostgreSQL in Testcontainers.
 - **secret-scan**: downloads a pinned gitleaks release, verifies its SHA-256 checksum and scans the
   full Git history.
-- **compose**: validates the Compose file, starts PostgreSQL and waits for it to become healthy.
+- **compose**: rejects missing credentials, starts PostgreSQL on a fresh volume, waits for it to
+  become healthy, queries it from the host, and runs the migration CLI up, down and up again.
 
 Actions are pinned to commit SHAs, the workflow token is read-only, and checkout does not persist
 credentials.
@@ -141,6 +165,10 @@ credentials.
   model, API boundaries and milestones.
 - [ADR-001: Technology stack](docs/adr/001-technology-stack.md): the chosen stack and the
   trade-offs behind it.
+- [ADR-002: Subscription lifecycle and schema](docs/adr/002-subscription-lifecycle-and-schema.md):
+  snapshot reconciliation, named transitions and schema conventions.
+- [Subscription lifecycle](docs/subscription-lifecycle.md): states, the allowed-transition table,
+  rejections, ordering, and the transaction and idempotency design.
 
 ## Security
 
